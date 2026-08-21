@@ -1,0 +1,8 @@
+{
+  "[python]": {
+    "editor.quickSuggestions": {
+      "comments": false
+    }
+  },
+  "github.copilot.inlineSuggest.enableInComments": false
+}

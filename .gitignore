@@ -1,0 +1,20 @@
+# Experiment logs live next to this repo, not inside it.
+power_logs_experiments/
+
+# Loose power logs left in the working directory
+*_power_log_*.txt
+power_log_*.txt
+
+# Python / editor
+__pycache__/
+*.py[cod]
+.venv/
+feedback_env/
+.vscode/
+
+# Hardware binary; keep TLPMX.py, not the DLL
+*.dll
+
+# Local data
+*.csv
+diagnostics/
