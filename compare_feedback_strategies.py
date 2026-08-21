@@ -325,7 +325,10 @@ def acquire_with_small_steps(hardware, settings, stop_flag):
     c_double = hardware["c_double"]
     byref = hardware["byref"]
     target = settings["target"]
-    tolerance = max(settings["tolerance"], 0.025 * abs(target))
+    # Use the explicit absolute tolerance supplied by the caller. Previous behavior
+    # forced a 2.5% relative floor which prevented small absolute tolerances
+    # (e.g. 0.01 mW) from taking effect when the target was ~2.7 mW.
+    tolerance = settings["tolerance"]
     current_power = c_double()
     set_jog_step(controller, Decimal, JogParametersBase, settings["min_step"])
     in_band = 0
