@@ -21,6 +21,9 @@ from experiment_logging import (
 
 # Global flag for stopping the program
 stop_flag = [False]
+laser_off_since = [None]
+LASER_OFF_POWER_MW = 0.05  # pre-MEMS at/below this is treated as laser off
+LASER_OFF_STOP_S = 5.0
 
 
 def read_ain(device, channel):
@@ -37,6 +40,28 @@ def measure_power_mw(meter, buffer):
         return float("nan")
     meter.measPower(byref(buffer), 1)
     return buffer.value * 1000.0
+
+
+def poll_stop(pre_mems_mw=None):
+    """Set stop_flag if the user pressed q or the laser has been off long enough."""
+    if msvcrt.kbhit():
+        key = msvcrt.getch()
+        if key == b'q':  # Press 'q' to stop
+            stop_flag[0] = True
+            print("Stopping program...")
+            return True
+    if pre_mems_mw is not None and pre_mems_mw == pre_mems_mw:  # not NaN
+        if pre_mems_mw <= LASER_OFF_POWER_MW:
+            now = time.time()
+            if laser_off_since[0] is None:
+                laser_off_since[0] = now
+            elif now - laser_off_since[0] >= LASER_OFF_STOP_S:
+                stop_flag[0] = True
+                print("Laser off (pre-MEMS near 0) for at least 5 s. Stopping program...")
+                return True
+        else:
+            laser_off_since[0] = None
+    return stop_flag[0]
 
 #Point to file path with the Kinesis files for the motor
 clr.AddReference('C:\\Program Files\\Thorlabs\\Kinesis\\Thorlabs.MotionControl.DeviceManagerCLI.dll')
@@ -223,21 +248,18 @@ def main():
             found_target = False
             print("Finding target power...")
             while found_target == False and not stop_flag[0]:
-                # Check if a key was pressed
-                if msvcrt.kbhit():
-                    key = msvcrt.getch()
-                    if key == b'q':  # Press 'q' to stop
-                        stop_flag[0] = True
-                        print("Stopping program...")
-                        break
-                
+                pre_mems_mw = measure_power_mw(preMEMS, pre_power)
+                if poll_stop(pre_mems_mw):
+                    break
+
                 if powermeter == "2":
                     measure_power_mw(postETL, current_power)
+                    power = current_power.value * 1000  # mW
                 elif powermeter == "1":
-                    measure_power_mw(preMEMS, current_power)
+                    power = pre_mems_mw
                 else:
                     print("Powermeter not assigned")
-                power = current_power.value * 1000  # mW
+                    power = float("nan")
 
                 while controller.IsDeviceBusy:
                     #print("Device is busy, waiting...")
@@ -258,32 +280,30 @@ def main():
 
 
             #Feedback Loop Long Term
-            print("Entering feedback loop to maintain target power. Press 'q' to stop.")
+            print("Entering feedback loop to maintain target power. Press 'q' to stop, or turn the laser off for 5 s.")
             while not stop_flag[0]:
-                
-                # Check if a key was pressed
-                if msvcrt.kbhit():
-                    key = msvcrt.getch()
-                    if key == b'q':  # Press 'q' to stop
-                        stop_flag[0] = True
-                        print("Stopping program...")
-                        break
-                
+                pre_mems_mw = measure_power_mw(preMEMS, pre_power)
+                if poll_stop(pre_mems_mw):
+                    break
+
                 start_time = time.time()
                 power_samples = []
                 stim_power = c_double()
-                while time.time() - start_time < sample_seconds:
+                while time.time() - start_time < sample_seconds and not stop_flag[0]:
+                    pre_mems_mw = measure_power_mw(preMEMS, pre_power)
+                    if poll_stop(pre_mems_mw):
+                        break
                     if powermeter == "2":
                         measure_power_mw(postETL, current_power)
                         stim_power_mw = measure_power_mw(postETL, stim_power)
+                        power = current_power.value * 1000  # mW
                     elif powermeter == "1":
-                        measure_power_mw(preMEMS, current_power)
+                        power = pre_mems_mw
                         stim_power_mw = measure_power_mw(postETL, stim_power)
                     else:
                         print("Powermeter not assigned")
                         stim_power_mw = float("nan")
-
-                    power = current_power.value * 1000  # mW
+                        power = float("nan")
                     etl_v = read_ain(d, ETL_AIN)
                     shutter_v = read_ain(d, SHUTTER_AIN)
                     append_power_sample(
@@ -294,6 +314,9 @@ def main():
                         shutter_v=shutter_v,
                     )
                     power_samples.append(power)
+
+                if stop_flag[0] or not power_samples:
+                    break
 
                 avg_power = sum(power_samples) / len(power_samples)
 
