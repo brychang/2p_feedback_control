@@ -26,16 +26,14 @@ def experiment_folder_name(timestamp):
 
 
 def default_logs_root(script_file=None):
-    """Return power_logs in the user's Documents folder.
+    """Return power_logs_experiments next to the git repo, not inside it.
 
-    Logs go in ~/Documents/power_logs/ for better permission handling.
+    Scripts live in the repo; logs go in ../power_logs_experiments/.
     """
     if script_file is None:
         script_file = __file__
-    documents = os.path.expanduser("~\\Documents")
-    logs_root = os.path.join(documents, "power_logs")
-    os.makedirs(logs_root, exist_ok=True)
-    return logs_root
+    script_dir = os.path.dirname(os.path.abspath(script_file))
+    return os.path.join(os.path.dirname(script_dir), POWER_LOGS_ROOT_NAME)
 
 
 def legacy_logs_root(script_file=None):
