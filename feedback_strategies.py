@@ -226,12 +226,27 @@ def summarize_records(records, target_power, tolerance):
             "mean_step_when_moving": 0.0,
         }
 
-    errors = [row["avg_power"] - target_power for row in records]
-    n = len(errors)
-    in_band = sum(1 for err in errors if abs(err) <= tolerance)
-    rms = math.sqrt(sum(err * err for err in errors) / n)
-    mae = sum(abs(err) for err in errors) / n
-    max_abs = max(abs(err) for err in errors)
+    # If raw samples are recorded per cycle, compute metrics over the concatenated
+    # sample stream so time-in-band reflects high-rate readings instead of one
+    # averaged value per cycle.
+    has_samples = any("samples" in row and row["samples"] for row in records)
+    if has_samples:
+        all_samples = []
+        for row in records:
+            all_samples.extend(row.get("samples") or [])
+        n = len(all_samples)
+        in_band = sum(1 for s in all_samples if abs(s - target_power) <= tolerance)
+        errs = [s - target_power for s in all_samples]
+        rms = math.sqrt(sum(e * e for e in errs) / n) if n else float("nan")
+        mae = sum(abs(e) for e in errs) / n if n else float("nan")
+        max_abs = max(abs(e) for e in errs) if n else float("nan")
+    else:
+        errors = [row["avg_power"] - target_power for row in records]
+        n = len(errors)
+        in_band = sum(1 for err in errors if abs(err) <= tolerance)
+        rms = math.sqrt(sum(err * err for err in errors) / n)
+        mae = sum(abs(err) for err in errors) / n
+        max_abs = max(abs(err) for err in errors)
 
     n_reversals = 0
     n_moves = 0
@@ -248,8 +263,8 @@ def summarize_records(records, target_power, tolerance):
         last_move_dir = direction
 
     return {
-        "n_cycles": n,
-        "time_in_band_frac": in_band / n,
+        "n_cycles": len(records),
+        "time_in_band_frac": in_band / (n if n else 1),
         "rms_error": rms,
         "mean_abs_error": mae,
         "max_abs_error": max_abs,

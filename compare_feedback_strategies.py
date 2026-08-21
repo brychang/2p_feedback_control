@@ -361,6 +361,11 @@ def acquire_with_small_steps(hardware, settings, stop_flag):
 
 
 def measure_average_live(hardware, settings, stop_flag):
+    """Return (avg, samples) collected over the sample window.
+
+    Samples are high-rate readings; metrics will be computed over raw samples
+    instead of per-cycle averages when available.
+    """
     preMEMS = hardware["preMEMS"]
     c_double = hardware["c_double"]
     byref = hardware["byref"]
@@ -378,8 +383,9 @@ def measure_average_live(hardware, settings, stop_flag):
         preMEMS.measPower(byref(current_power), 1)
         samples.append(current_power.value * 1000.0)
     if not samples:
-        return None
-    return sum(samples) / len(samples)
+        return None, []
+    avg = sum(samples) / len(samples)
+    return avg, samples
 
 
 def jog_live(hardware, direction, step_deg):
@@ -403,7 +409,7 @@ def run_live_strategy(strategy, hardware, settings, stop_flag):
     while time.time() - t0 < settings["seconds"]:
         if stop_flag[0] or stop_flag[1]:
             break
-        avg_power = measure_average_live(hardware, settings, stop_flag)
+        avg_power, samples = measure_average_live(hardware, settings, stop_flag)
         if avg_power is None or stop_flag[0] or stop_flag[1]:
             break
         direction, step_deg = strategy.decide(
@@ -423,6 +429,7 @@ def run_live_strategy(strategy, hardware, settings, stop_flag):
                 "cycle": cycle,
                 "t_s": time.time() - t0,
                 "avg_power": avg_power,
+                "samples": samples,
                 "error": avg_power - settings["target"],
                 "in_band": int(abs(avg_power - settings["target"]) <= settings["tolerance"]),
                 "action": DIRECTION_NAMES[direction],
