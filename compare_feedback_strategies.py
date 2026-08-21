@@ -486,6 +486,7 @@ def run_live_comparison(settings, output_dir, stop_flag):
     extra_lines = [
         "Live pre-MEMS run. Each strategy starts after a small-step acquire so the",
         "comparison is about hold stability, not who lucked into the right starting power.",
+        "Strategy order is randomized each round to reduce order bias.",
     ]
     named_rows = {}
     all_metrics = []
@@ -493,7 +494,9 @@ def run_live_comparison(settings, output_dir, stop_flag):
         for round_idx in range(settings["rounds"]):
             if stop_flag[0]:
                 break
-            for strategy in make_strategies(settings["max_step"], settings["min_step"]):
+            strategies = list(make_strategies(settings["max_step"], settings["min_step"]))
+            random.shuffle(strategies)
+            for strategy in strategies:
                 if stop_flag[0]:
                     break
                 stop_flag[1] = False
