@@ -10,7 +10,6 @@ __pycache__/
 *.py[cod]
 .venv/
 feedback_env/
-.vscode/
 
 # Hardware binary; keep TLPMX.py, not the DLL
 *.dll
