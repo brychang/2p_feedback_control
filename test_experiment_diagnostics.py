@@ -110,6 +110,60 @@ class TestStimDetection(unittest.TestCase):
         self.assertEqual(detection["events"][0]["start_index"], 20)
 
 
+class TestPlateauSelection(unittest.TestCase):
+    def _event_data(self, stim, shutter=None):
+        stim = np.asarray(stim, dtype=float)
+        n = stim.size
+        return {
+            "n": n,
+            "stim": stim,
+            "feedback": np.full(n, 1.5),
+            "etl": None,
+            "shutter": None if shutter is None else np.asarray(shutter, dtype=float),
+            "time": np.arange(n, dtype=float) * 0.01,
+            "time_is_sample_index": False,
+            "folder": "synthetic",
+        }
+
+    def test_plateau_drops_meter_edge_ramps(self):
+        """A shutter-high window includes rising/falling meter samples.
+
+        Peak-fraction (0.9 of 2.0 mW) must keep only the 2.0 mW plateau, not the
+        0.4/1.0 edges. The previous Otsu+95%-of-event-length rule fell back to
+        averaging the whole window.
+        """
+        stim = np.array(
+            [0.05] * 10
+            + [0.4, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 0.4]
+            + [0.05] * 10
+        )
+        shutter = np.array([0.0] * 10 + [5.0] * 9 + [0.0] * 10)
+        detection = detect_stim_events(self._event_data(stim, shutter=shutter))
+        self.assertEqual(detection["n_events"], 1)
+        event = detection["events"][0]
+        self.assertEqual(event["start_index"], 10)
+        self.assertEqual(event["end_index"], 19)
+        np.testing.assert_array_equal(event["plateau_indices"], [12, 13, 14, 15, 16])
+        self.assertAlmostEqual(event["stim_mean"], 2.0)
+
+        diagnostics = compute_diagnostics(self._event_data(stim, shutter=shutter), detection)
+        plateau_i = np.flatnonzero(diagnostics["plateau_mask"])
+        np.testing.assert_array_equal(plateau_i, [12, 13, 14, 15, 16])
+        self.assertAlmostEqual(diagnostics["stim_during_events"]["mean"], 2.0)
+
+    def test_plateau_mask_excludes_mid_pulse_dips(self):
+        stim = np.array([0.05] * 8 + [2.0, 2.0, 1.0, 2.0, 2.0] + [0.05] * 8)
+        shutter = np.array([0.0] * 8 + [5.0] * 5 + [0.0] * 8)
+        detection = detect_stim_events(self._event_data(stim, shutter=shutter))
+        self.assertEqual(detection["n_events"], 1)
+        np.testing.assert_array_equal(
+            detection["events"][0]["plateau_indices"], [8, 9, 11, 12]
+        )
+        self.assertAlmostEqual(detection["events"][0]["stim_mean"], 2.0)
+        diagnostics = compute_diagnostics(self._event_data(stim, shutter=shutter), detection)
+        self.assertFalse(bool(diagnostics["plateau_mask"][10]))
+
+
 class TestCorrelationAndPlots(unittest.TestCase):
     def test_pearson_and_stim_etl_correlation(self):
         rng = np.random.default_rng(0)

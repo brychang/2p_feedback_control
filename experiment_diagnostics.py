@@ -11,6 +11,12 @@ from experiment_logging import default_logs_root, legacy_logs_root, power_log_fi
 
 FOLDER_NAME_RE = re.compile(r"^feedback_control_(\d{8}_\d{6})$")
 
+# Match analyze_stim_power_coupling.extract_stims: keep samples at least this
+# fraction of the opening's own peak. The meter smears shutter edges, so a raw
+# above-threshold mean mixes in partially-open samples.
+DEFAULT_PLATEAU_FRAC = 0.9
+DEFAULT_MIN_PLATEAU_SAMPLES = 2
+
 
 def _read_float_column(path):
     if not path or not os.path.isfile(path):
@@ -183,36 +189,35 @@ def _merge_short_gaps(events, times, min_gap_s):
     return [(start, end) for start, end in merged]
 
 
-def _plateau_slice_for_event(values, start, end, min_fraction=0.95):
-    """Return the indices for the sustained plateau portion of an event."""
-    event = np.asarray(values[start:end], dtype=float)
-    finite = event[np.isfinite(event)]
-    if finite.size == 0:
-        return start, end
+def _plateau_indices_for_event(
+    values,
+    start,
+    end,
+    plateau_frac=DEFAULT_PLATEAU_FRAC,
+):
+    """Indices of samples within `plateau_frac` of this opening's own peak.
 
-    plateau = otsu_threshold(finite)
-    if plateau is None:
-        return start, end
+    Ported from analyze_stim_power_coupling.extract_stims. Unlike a first-to-last
+    high slice, this is a sample-wise mask, so edge ramps and mid-pulse dips are
+    dropped rather than averaged in.
+    """
+    window = np.asarray(values[start:end], dtype=float)
+    finite = np.isfinite(window)
+    if not np.any(finite):
+        return np.arange(start, end, dtype=int)
 
-    event_finite = np.isfinite(event)
-    high = event_finite & (event >= plateau)
-    if not np.any(high):
-        return start, end
-
-    high_indices = np.flatnonzero(high)
-    plateau_len = len(high_indices)
-    event_len = end - start
-    if plateau_len < max(1, int(np.ceil(min_fraction * event_len))):
-        return start, end
-
-    plateau_start = start + int(high_indices[0])
-    plateau_end = start + int(high_indices[-1]) + 1
-    if plateau_end <= plateau_start:
-        return start, end
-    return plateau_start, plateau_end
+    peak = float(np.max(window[finite]))
+    keep = finite & (window >= plateau_frac * peak)
+    return np.flatnonzero(keep) + start
 
 
-def detect_stim_events(data, min_gap_s=0.02, min_samples=2):
+def detect_stim_events(
+    data,
+    min_gap_s=0.02,
+    min_samples=2,
+    plateau_frac=DEFAULT_PLATEAU_FRAC,
+    min_plateau_samples=DEFAULT_MIN_PLATEAU_SAMPLES,
+):
     """Detect stimulation windows from shutter voltage or pulsed stim power.
 
     Returns a dict with boolean mask, event index pairs, method name, and threshold.
@@ -258,21 +263,26 @@ def detect_stim_events(data, min_gap_s=0.02, min_samples=2):
 
     event_records = []
     for start, end in events:
-        plateau_start, plateau_end = _plateau_slice_for_event(stim, start, end)
+        plateau_i = _plateau_indices_for_event(stim, start, end, plateau_frac=plateau_frac)
+        if plateau_i.size < min_plateau_samples:
+            continue
+        plateau_start = int(plateau_i[0])
+        plateau_end = int(plateau_i[-1]) + 1
         event_records.append(
             {
                 "start_index": start,
                 "end_index": end,
+                "plateau_indices": plateau_i,
                 "plateau_start_index": plateau_start,
                 "plateau_end_index": plateau_end,
                 "t_start": float(times[start]),
                 "t_end": float(times[end - 1]),
                 "duration": float(times[end - 1] - times[start]),
-                "plateau_duration": float(times[plateau_end - 1] - times[plateau_start]),
-                "stim_mean": float(np.nanmean(stim[plateau_start:plateau_end])),
-                "feedback_mean": float(np.nanmean(data["feedback"][plateau_start:plateau_end])),
+                "plateau_duration": float(times[plateau_i[-1]] - times[plateau_i[0]]),
+                "stim_mean": float(np.nanmean(stim[plateau_i])),
+                "feedback_mean": float(np.nanmean(data["feedback"][plateau_i])),
                 "etl_mean": (
-                    float(np.nanmean(data["etl"][plateau_start:plateau_end]))
+                    float(np.nanmean(data["etl"][plateau_i]))
                     if data["etl"] is not None
                     else float("nan")
                 ),
@@ -321,7 +331,9 @@ def compute_diagnostics(data, detection=None):
 
     plateau_mask = np.zeros_like(mask)
     for event in detection["events"]:
-        plateau_mask[event["plateau_start_index"] : event["plateau_end_index"]] = True
+        plateau_i = np.asarray(event["plateau_indices"], dtype=int)
+        if plateau_i.size:
+            plateau_mask[plateau_i] = True
 
     stim_at_events = stim[plateau_mask] if np.any(plateau_mask) else np.array([])
     feedback_at_events = feedback[plateau_mask] if np.any(plateau_mask) else np.array([])
@@ -379,7 +391,7 @@ def format_diagnostics_text(data, diagnostics):
     lines.extend(
         [
             "",
-            "During detected stims:",
+            "During detected stim plateaus:",
             f"  stim     mean={diagnostics['stim_during_events']['mean']:.6g}  std={diagnostics['stim_during_events']['std']:.6g}",
             f"  feedback mean={diagnostics['feedback_during_events']['mean']:.6g}  std={diagnostics['feedback_during_events']['std']:.6g}",
             "",
@@ -449,10 +461,10 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
         plateau_stim = stim[plateau_mask] if np.any(plateau_mask) else np.array([])
         if plateau_stim.size:
             ax.hist(plateau_stim[np.isfinite(plateau_stim)], bins=40, color="tab:red", alpha=0.85)
-            ax.set_title("Histogram of stim power during detected stims")
+            ax.set_title("Histogram of stim power on detected plateaus")
         else:
             ax.text(0.5, 0.5, "No pulsed stims detected", ha="center", va="center")
-            ax.set_title("Histogram of stim power during detected stims")
+            ax.set_title("Histogram of stim power on detected plateaus")
         ax.set_xlabel("Stim power (mW)")
         ax.set_ylabel("Count")
         _save(fig, "histogram_stim_power_during_stims.png")
@@ -461,11 +473,11 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
         event_means = [ev["stim_mean"] for ev in diagnostics["detection"]["events"]]
         if event_means:
             ax.hist(event_means, bins=min(20, max(5, len(event_means))), color="tab:purple", alpha=0.85)
-            ax.set_title("Histogram of mean stim power per detected event")
+            ax.set_title("Histogram of mean stim power per plateau")
         else:
             ax.text(0.5, 0.5, "No stim events", ha="center", va="center")
-            ax.set_title("Histogram of mean stim power per detected event")
-        ax.set_xlabel("Event mean stim power (mW)")
+            ax.set_title("Histogram of mean stim power per plateau")
+        ax.set_xlabel("Plateau mean stim power (mW)")
         ax.set_ylabel("Events")
         _save(fig, "histogram_stim_event_means.png")
 
@@ -473,6 +485,16 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
         ax.plot(times, stim, color="tab:red", lw=0.8, label="stim power")
         if np.any(mask):
             ax.scatter(times[mask], stim[mask], s=8, color="black", label="detected stim")
+        if np.any(plateau_mask):
+            ax.scatter(
+                times[plateau_mask],
+                stim[plateau_mask],
+                s=28,
+                facecolors="none",
+                edgecolors="tab:red",
+                linewidths=1.2,
+                label="plateau used",
+            )
         ax.set_xlabel(xlabel_time)
         ax.set_ylabel("Stim power (mW)")
         ax.set_title(
@@ -515,8 +537,15 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
     if has_etl:
         fig, ax = plt.subplots(figsize=(6.5, 6))
         ax.scatter(etl, stim, s=8, alpha=0.35, color="gray", label="all samples")
-        if np.any(mask):
-            ax.scatter(etl[mask], stim[mask], s=14, alpha=0.8, color="tab:red", label="at stim")
+        if np.any(plateau_mask):
+            ax.scatter(
+                etl[plateau_mask],
+                stim[plateau_mask],
+                s=14,
+                alpha=0.8,
+                color="tab:red",
+                label="at stim plateau",
+            )
         ax.set_xlabel("ETL analog (V)")
         ax.set_ylabel("Stim power (mW)")
         ax.set_title(
@@ -530,16 +559,18 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
 
     if has_stim:
         fig, ax = plt.subplots(figsize=(6.5, 6))
-        if np.any(mask):
-            ax.scatter(feedback[mask], stim[mask], s=14, alpha=0.8, color="tab:blue")
+        if np.any(plateau_mask):
+            ax.scatter(
+                feedback[plateau_mask], stim[plateau_mask], s=14, alpha=0.8, color="tab:blue"
+            )
             ax.set_title(
-                f"Stim vs feedback at stim  r={diagnostics['r_stim_feedback_at_stim']:.3f}"
+                f"Stim vs feedback at stim plateau  r={diagnostics['r_stim_feedback_at_stim']:.3f}"
             )
         else:
             ax.text(0.5, 0.5, "No detected stims to correlate", ha="center", va="center")
-            ax.set_title("Stim vs feedback at stim")
-        ax.set_xlabel("Feedback power at stim (mW)")
-        ax.set_ylabel("Stim power at stim (mW)")
+            ax.set_title("Stim vs feedback at stim plateau")
+        ax.set_xlabel("Feedback power at stim plateau (mW)")
+        ax.set_ylabel("Stim power at stim plateau (mW)")
         _save(fig, "correlation_stim_vs_feedback_at_stim.png")
     else:
         skipped.append("correlation_stim_vs_feedback_at_stim.png (no stim-path readings)")
