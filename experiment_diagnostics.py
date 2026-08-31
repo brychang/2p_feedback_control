@@ -335,6 +335,7 @@ def compute_diagnostics(data, detection=None):
 
     return {
         "detection": detection,
+        "plateau_mask": plateau_mask,
         "stim_all": variance_stats(stim),
         "feedback_all": variance_stats(feedback),
         "etl_all": variance_stats(etl) if has_etl else None,
@@ -424,6 +425,7 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
     etl = data["etl"]
     times = data["time"]
     mask = diagnostics["detection"]["mask"]
+    plateau_mask = diagnostics.get("plateau_mask", mask)
     xlabel_time = "Sample" if data["time_is_sample_index"] else "Time (s)"
     has_stim = diagnostics.get("has_stim", has_finite_readings(stim))
     has_etl = diagnostics.get("has_etl", has_finite_readings(etl))
@@ -444,8 +446,9 @@ def save_diagnostic_plots(data, diagnostics, output_dir):
         _save(fig, "histogram_stim_power_all.png")
 
         fig, ax = plt.subplots(figsize=(7, 4.5))
-        if np.any(mask):
-            ax.hist(stim[mask], bins=40, color="tab:red", alpha=0.85)
+        plateau_stim = stim[plateau_mask] if np.any(plateau_mask) else np.array([])
+        if plateau_stim.size:
+            ax.hist(plateau_stim[np.isfinite(plateau_stim)], bins=40, color="tab:red", alpha=0.85)
             ax.set_title("Histogram of stim power during detected stims")
         else:
             ax.text(0.5, 0.5, "No pulsed stims detected", ha="center", va="center")
