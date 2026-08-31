@@ -183,6 +183,35 @@ def _merge_short_gaps(events, times, min_gap_s):
     return [(start, end) for start, end in merged]
 
 
+def _plateau_slice_for_event(values, start, end, min_fraction=0.95):
+    """Return the indices for the sustained plateau portion of an event."""
+    event = np.asarray(values[start:end], dtype=float)
+    finite = event[np.isfinite(event)]
+    if finite.size == 0:
+        return start, end
+
+    plateau = otsu_threshold(finite)
+    if plateau is None:
+        return start, end
+
+    event_finite = np.isfinite(event)
+    high = event_finite & (event >= plateau)
+    if not np.any(high):
+        return start, end
+
+    high_indices = np.flatnonzero(high)
+    plateau_len = len(high_indices)
+    event_len = end - start
+    if plateau_len < max(1, int(np.ceil(min_fraction * event_len))):
+        return start, end
+
+    plateau_start = start + int(high_indices[0])
+    plateau_end = start + int(high_indices[-1]) + 1
+    if plateau_end <= plateau_start:
+        return start, end
+    return plateau_start, plateau_end
+
+
 def detect_stim_events(data, min_gap_s=0.02, min_samples=2):
     """Detect stimulation windows from shutter voltage or pulsed stim power.
 
@@ -229,17 +258,21 @@ def detect_stim_events(data, min_gap_s=0.02, min_samples=2):
 
     event_records = []
     for start, end in events:
+        plateau_start, plateau_end = _plateau_slice_for_event(stim, start, end)
         event_records.append(
             {
                 "start_index": start,
                 "end_index": end,
+                "plateau_start_index": plateau_start,
+                "plateau_end_index": plateau_end,
                 "t_start": float(times[start]),
                 "t_end": float(times[end - 1]),
                 "duration": float(times[end - 1] - times[start]),
-                "stim_mean": float(np.nanmean(stim[start:end])),
-                "feedback_mean": float(np.nanmean(data["feedback"][start:end])),
+                "plateau_duration": float(times[plateau_end - 1] - times[plateau_start]),
+                "stim_mean": float(np.nanmean(stim[plateau_start:plateau_end])),
+                "feedback_mean": float(np.nanmean(data["feedback"][plateau_start:plateau_end])),
                 "etl_mean": (
-                    float(np.nanmean(data["etl"][start:end]))
+                    float(np.nanmean(data["etl"][plateau_start:plateau_end]))
                     if data["etl"] is not None
                     else float("nan")
                 ),
@@ -286,10 +319,14 @@ def compute_diagnostics(data, detection=None):
     feedback = data["feedback"]
     etl = data["etl"]
 
-    stim_at_events = stim[mask] if np.any(mask) else np.array([])
-    feedback_at_events = feedback[mask] if np.any(mask) else np.array([])
+    plateau_mask = np.zeros_like(mask)
+    for event in detection["events"]:
+        plateau_mask[event["plateau_start_index"] : event["plateau_end_index"]] = True
+
+    stim_at_events = stim[plateau_mask] if np.any(plateau_mask) else np.array([])
+    feedback_at_events = feedback[plateau_mask] if np.any(plateau_mask) else np.array([])
     has_etl = has_finite_readings(etl)
-    etl_at_events = etl[mask] if has_etl and np.any(mask) else np.array([])
+    etl_at_events = etl[plateau_mask] if has_etl and np.any(plateau_mask) else np.array([])
 
     event_stim = np.array([ev["stim_mean"] for ev in detection["events"]], dtype=float)
     event_feedback = np.array([ev["feedback_mean"] for ev in detection["events"]], dtype=float)
